@@ -1,0 +1,66 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Install CDK dependencies
+      run: npm ci
+
+    - name: Install Lambda dependencies
+      run: |
+        cd lambda
+        npm ci
+
+    - name: Build CDK
+      run: npm run build
+
+    - name: Deploy CDK Stack
+      run: npm run deploy
+
+    - name: Get Stack Outputs
+      id: stack-outputs
+      run: |
+        echo "api_url=$(aws cloudformation describe-stacks --stack-name KnowledgeBaseStack --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text)" >> $GITHUB_OUTPUT
+        echo "user_pool_id=$(aws cloudformation describe-stacks --stack-name KnowledgeBaseStack --query 'Stacks[0].Outputs[?OutputKey==`UserPoolId`].OutputValue' --output text)" >> $GITHUB_OUTPUT
+        echo "user_pool_client_id=$(aws cloudformation describe-stacks --stack-name KnowledgeBaseStack --query 'Stacks[0].Outputs[?OutputKey==`UserPoolClientId`].OutputValue' --output text)" >> $GITHUB_OUTPUT
+        echo "frontend_bucket=$(aws cloudformation describe-stacks --stack-name KnowledgeBaseStack --query 'Stacks[0].Outputs[?OutputKey==`FrontendBucketName`].OutputValue' --output text)" >> $GITHUB_OUTPUT
+        echo "region=$(aws cloudformation describe-stacks --stack-name KnowledgeBaseStack --query 'Stacks[0].Outputs[?OutputKey==`Region`].OutputValue' --output text)" >> $GITHUB_OUTPUT
+
+    - name: Install Frontend dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Build Frontend
+      run: |
+        cd frontend
+        VITE_API_URL=${{ steps.stack-outputs.outputs.api_url }} \
+        VITE_USER_POOL_ID=${{ steps.stack-outputs.outputs.user_pool_id }} \
+        VITE_USER_POOL_CLIENT_ID=${{ steps.stack-outputs.outputs.user_pool_client_id }} \
+        VITE_REGION=${{ steps.stack-outputs.outputs.region }} \
+        npm run build
+
+    - name: Deploy Frontend to S3
+      run: |
+        aws s3 sync frontend/dist/ s3://${{ steps.stack-outputs.outputs.frontend_bucket }}/ --delete
